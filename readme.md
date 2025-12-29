@@ -33,6 +33,8 @@ Quiz App is a lightweight desktop Python application to run fully offline quiz c
 	3. Click on Extract and wait for it to complete.
 	4. After completion close the extractor and open the output directory.
 
+	You can download the WinRAR self-extracting archive directly here: [Prashan Baan.exe](https://github.com/Abhay2133/quiz_app/raw/refs/heads/main/Prashan%20Baan.exe)
+
 	#### After extraction
 	- Admin executable: Prashan Baan\admin\admin.exe
 	- Participant executable: Prashan Baan\participant\participant.exe
