@@ -124,6 +124,3 @@ Below are a few screenshots of the Admin UI and live rounds. Files are in the `d
 ### Extras
 - I can add a step-by-step screenshot walkthrough in `docs/screenshots/` and embed captions.
 - I can create `run_admin.bat` and `run_participant.bat` for Windows convenience.
-
----
-Last updated: 2025-12-29
