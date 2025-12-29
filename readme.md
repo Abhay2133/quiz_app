@@ -25,35 +25,59 @@ Quiz App is a lightweight desktop Python application to run fully offline quiz c
 1. Clone or copy this project folder to each laptop.
 2. (Recommended) Create and activate a virtual environment:
 
-	```bash
-	python -m venv venv
-	venv\Scripts\activate   # Windows
-	source venv/bin/activate  # macOS / Linux
+	### Using the included Windows executables (no Python required)
+
+	#### To extract Windows exe files
+	1. Double click the "Prashan Baan.exe" file.
+	2. Choose the output directory (I prefer Desktop).
+	3. Click on Extract and wait for it to complete.
+	4. After completion close the extractor and open the output directory.
+
+	#### After extraction
+	- Admin executable: Prashan Baan\admin\admin.exe
+	- Participant executable: Prashan Baan\participant\participant.exe
+
+	#### Run the executables
+	- Double‑click the `.exe` file from File Explorer, or run from a command prompt to see runtime logs:
+
+	```powershell
+	cd "Prashan Baan\admin"
+	.\admin.exe
+
+	-- and on participant machines --
+
+	cd "Prashan Baan\participant"
+	.\participant.exe
 	```
 
-3. Install dependencies:
+	#### Notes when using the executables
+	- The Admin machine must still act as the network hub (hotspot/Wi‑Fi) so participants can connect.
+	- Allow the `.exe` through Windows Firewall if participants cannot connect; the same network & firewall tips above apply.
+	- The executables include the application binaries and embedded resources under their `data/` subfolders; do not delete those directories.
 
-	```bash
-	pip install -r requirements.txt
-	```
+	### Running the app
 
-### Quick file notes
-- Question CSV files are in [data/questions/](data/questions/). Each round has CSVs named `r1.csv`, `r2.csv`, etc.
-- Admin UI components live under [app/ui/admin/](app/ui/admin/).
+	#### Admin (host)
+	1. On the laptop that will be the host (ADMIN), create a hotspot or ensure all participant devices can reach the ADMIN machine over Wi‑Fi.
+	2. Open a terminal in the project root and activate the virtualenv.
+	3. Start the admin process:
 
-### Using the included Windows executables (no Python required)
+		```bash
+		python admin.py
+		```
 
-#### To extract Windows exe files
-1. Double click the "Prashan Baan.exe" file.
-2. Choose the output directory (I prefer Desktop).
-3. Click on Extract and wait for it to complete.
-4. After completion close the extractor and open the output directory.
+	4. The Admin application presents a GUI for loading question rounds, starting rounds, viewing the live scoreboard, and controlling the flow.
 
-#### After extraction
-- Admin executable: Prashan Baan\admin\admin.exe
-- Participant executable: Prashan Baan\participant\participant.exe
+	#### Participant (client)
+	1. On each participant laptop, connect to the ADMIN's hotspot or the same local network.
+	2. Activate the virtualenv and run:
 
-#### Run the executables
+		```bash
+		python participant.py
+		```
+
+	3. Follow the on‑screen prompts in the Participant client to connect to the Admin (you may be asked for the ADMIN IP or to select from discovered hosts).
+	4. Once connected, participants will receive questions and submit answers; scores update on the Admin's live scoreboard.
 - Double‑click the `.exe` file from File Explorer, or run from a command prompt to see runtime logs:
 
 ```powershell
@@ -71,29 +95,6 @@ cd "Prashan Baan\participant"
 - Allow the `.exe` through Windows Firewall if participants cannot connect; the same network & firewall tips above apply.
 - The executables include the application binaries and embedded resources under their `data/` subfolders; do not delete those directories.
 
-### Running the app [USING PYTHON]
-
-#### Admin (host)
-1. On the laptop that will be the host (ADMIN), create a hotspot or ensure all participant devices can reach the ADMIN machine over Wi‑Fi.
-2. Open a terminal in the project root and activate the virtualenv.
-3. Start the admin process:
-
-	```bash
-	python admin.py
-	```
-
-4. The Admin application presents a GUI for loading question rounds, starting rounds, viewing the live scoreboard, and controlling the flow.
-
-#### Participant (client)
-1. On each participant laptop, connect to the ADMIN's hotspot or the same local network.
-2. Activate the virtualenv and run:
-
-	```bash
-	python participant.py
-	```
-
-3. Follow the on‑screen prompts in the Participant client to connect to the Admin (you may be asked for the ADMIN IP or to select from discovered hosts).
-4. Once connected, participants will receive questions and submit answers; scores update on the Admin's live scoreboard.
 
 ### Network & Firewall tips
 - Ensure the ADMIN machine's IP is reachable from participant machines (same subnet).
