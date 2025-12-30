@@ -13,7 +13,7 @@ class QuestionFrame(ctk.CTkFrame):
 
     def __init__(self, master,options=None,**kwargs):
         super().__init__(master, **kwargs)
-        self.option=options
+        self.options=options
 
     def createOption(self, master, text, i):
         return ctk.CTkButton(master, width=200, height=40, text=text, border_color="#888", border_width=2,hover_color="#eee", font=("Roboto", 18), fg_color="transparent", command=lambda:self.setSelected(i))
@@ -129,7 +129,7 @@ class ROUND(ctk.CTkFrame):
 
         self.f_question.l_question.configure(text=q.text)
 
-        if not bool(self.f_question.option):
+        if not bool(self.f_question.options):
             return
         t_options = q.optionsT()
         for option, l_option in zip(t_options, self.f_question.options):

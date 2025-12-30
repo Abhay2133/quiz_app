@@ -12,36 +12,50 @@ import csv
 import random
 from .struct import ADMIN
 from .qb import QuestionBank
-from .util import Participants,Participant
+from .util import Participants, Participant
 from .struct import Round
 from .qb import ClientQuestion, Question
 from .sm import Scores
 from .util import createPayload
 from ..ui.admin.frames.live import PlayFrame
 from ..ui.rounds.round2 import Round2 as R2
-import random
+from .logger import get_logger
+from ..config import config
+
+logger = get_logger("round")
 
 class Round1(Round):
-    name="Straight Forward"
-    def __init__(self,admin:ADMIN) -> None:
-        super().__init__(admin, admin.qBank.round1, mark=10, minusMark=0,id=1, name=Round1.name)
+    name = "Straight Forward"
+    
+    def __init__(self, admin: ADMIN) -> None:
+        mark = config.get("rounds.round1.mark", 10)
+        minus_mark = config.get("rounds.round1.minus_mark", 0)
+        super().__init__(admin, admin.qBank.round1, mark=mark, minusMark=minus_mark, id=1, name=Round1.name)
+        logger.info(f"Round1 initialized: mark={mark}, minus_mark={minus_mark}")
 
 class Round2(Round):
-    name="Bujho Toh Jano"
-    def __init__(self,admin:ADMIN) -> None:
-        super().__init__(admin, admin.qBank.round2,mark=10, minusMark=-5, id=2, name=Round2.name)
+    name = "Bujho Toh Jano"
+    
+    def __init__(self, admin: ADMIN) -> None:
+        mark = config.get("rounds.round2.mark", 10)
+        minus_mark = config.get("rounds.round2.minus_mark", -5)
+        super().__init__(admin, admin.qBank.round2, mark=mark, minusMark=minus_mark, id=2, name=Round2.name)
+        logger.info(f"Round2 initialized: mark={mark}, minus_mark={minus_mark}")
 
     def check_answer(self, qid, answer):
         rightAns = super().check_answer(qid, answer)
         self.admin.show_right_answer(qid, rightAns, answer)
     
 class Round3(Round):
-    name="Roll the Dice"
-    rolling_i=None # store the index of the participant who is rolling the dice
-    target_i=None # the index of the participant came by rolling the dice
+    name = "Roll the Dice"
+    rolling_i = None  # store the index of the participant who is rolling the dice
+    target_i = None  # the index of the participant came by rolling the dice
 
-    def __init__(self,admin) -> None:
-        super().__init__(admin, admin.qBank.round3,mark=10, minusMark=-5, id=3, name=Round3.name)
+    def __init__(self, admin) -> None:
+        mark = config.get("rounds.round3.mark", 10)
+        minus_mark = config.get("rounds.round3.minus_mark", -5)
+        super().__init__(admin, admin.qBank.round3, mark=mark, minusMark=minus_mark, id=3, name=Round3.name)
+        logger.info(f"Round3 initialized: mark={mark}, minus_mark={minus_mark}")
 
     def check_answer(self, qid, answer):
         rightAns = super().check_answer(qid, answer)
@@ -60,14 +74,25 @@ class Round3(Round):
 
     def roll(self)->int:
         num:int = self.admin.participants.count()
-        indices = list(range(0,num))
-        indices.remove(int(self.rolling_i))
+        if num <= 1:
+            logger.warning("Not enough participants for dice roll")
+            return None
+        indices = list(range(0, num))
+        if self.rolling_i is not None and self.rolling_i in indices:
+            indices.remove(int(self.rolling_i))
+        if not indices:
+            logger.warning("No valid indices for dice roll")
+            return None
         result = random.choice(indices)
         self.target_i = result
 
-        name = self.admin.participants.getNames()[result]
-        return name
-        pass
+        names = self.admin.participants.getNames()
+        if result < len(names):
+            name = names[result]
+            return name
+        else:
+            logger.error(f"Dice roll result {result} out of range for {len(names)} participants")
+            return None
 
     def ask(self):
         pf:PlayFrame = PlayFrame.me
@@ -88,17 +113,19 @@ class Round3(Round):
         self.curr_scores.add(participantID, self.minusMark)
 
     def askNextQ(self):
-        if not self.lastQuestionMarked : return
+        """Move to next question, handling dice roll logic."""
+        if not self.lastQuestionMarked:
+            return
         self.lastQuestionMarked = False
 
         if self.rolling_i is not None:
             self.curr_participant_i = self.rolling_i
             self.target_i = None
-            self.rolling_i=None
-            pass
-        self.curr_participant_i = (self.curr_participant_i+1)%self.admin.participants.count()
+            self.rolling_i = None
+        
+        self.curr_participant_i = (self.curr_participant_i + 1) % self.admin.participants.count()
         self.curr_question_i += 1
-        if self.curr_question_i >= len(self.questions__):
+        if self.curr_question_i >= len(self.questions):
             self.onend()
             return
         self.askQ()
@@ -106,72 +133,76 @@ class Round3(Round):
 
 
 class Round4(Round):
-    name="Speedo Round"
+    name = "Speedo Round"
     totalQ = 15
-    isBuzzerPressed=False
+    isBuzzerPressed = False
     first_id = None
 
-    def __init__(self,admin) -> None:
-        super().__init__(admin, admin.qBank.round4,mark=10, minusMark=-5, id=4, name=Round4.name)
+    def __init__(self, admin) -> None:
+        mark = config.get("rounds.round4.mark", 10)
+        minus_mark = config.get("rounds.round4.minus_mark", -5)
+        self.totalQ = config.get("rounds.round4.total_questions", 15)
+        super().__init__(admin, admin.qBank.round4, mark=mark, minusMark=minus_mark, id=4, name=Round4.name)
+        logger.info(f"Round4 initialized: mark={mark}, minus_mark={minus_mark}, total_questions={self.totalQ}")
 
     
-    def check_answer(self, qid, answer):
-        self.lastQuestionMarked=True
+    def check_answer(self, qid: str, answer: int) -> int:
+        """Check answer for Round4 (buzzer round)."""
+        self.lastQuestionMarked = True
         rightAns = None
-        for question in self.questions__:
+        for question in self.questions:
             if str(qid) == str(question.qid):
-                rightAns=question.answer
-        isRight=int(rightAns)==int(answer)
-        print(f"CHECKING ANSWER qid:{qid}, ans:{answer}, correct:{rightAns}")
+                rightAns = question.answer
+                break
+        isRight = int(rightAns) == int(answer)
+        logger.debug(f"Round4 answer check - qid:{qid}, ans:{answer}, correct:{rightAns}, result:{'CORRECT' if isRight else 'WRONG'}")
         participantID = self.admin.participants.getClientIDs()[self.curr_participant_i]
         if isRight:
             self.curr_scores.add(participantID, self.mark)
         else:
             self.curr_scores.add(participantID, self.minusMark)
-
-        print(isRight)
-        return rightAns
+        return int(rightAns)
         
-    def loadQ(self):
+    def loadQ(self) -> None:
+        """Load questions for Round 4 (fixed total)."""
         allQuestions = list(self.admin.qBank.round4)
         
         if len(allQuestions) < self.totalQ:
-            raise Exception(f"NUMBER OF QUESTIONs in DB is less than participants : {len(allQuestions)} < {self.totalQ}")
+            raise Exception(f"NUMBER OF QUESTIONs in DB is less than required: {len(allQuestions)} < {self.totalQ}")
         random.shuffle(allQuestions)
-        self.questions__ = tuple(allQuestions[0:self.totalQ])
+        self.questions = tuple(allQuestions[0:self.totalQ])
 
-    def start(self):
-        print(f"ROUND-{self.id} started")
+    def start(self) -> None:
+        """Start Round4."""
+        logger.info(f"ROUND-{self.id} ({self.name}) started")
         self.loadQ()
         self.admin.server.broadcast(createPayload("setround", self.id))
         self.askQ()
-        self.curr_scores=Scores(self.admin.participants.getClientIDs())
+        self.curr_scores = Scores(self.admin.participants.getClientIDs())
 
-    def askQ(self):
-        self.first_id=None
-        self.isBuzzerPressed=False
+    def askQ(self) -> None:
+        """Ask question to all participants (buzzer round)."""
+        self.first_id = None
+        self.isBuzzerPressed = False
         self.clear_users()
-        # participantID = self.admin.participants.getClientIDs()[self.currentParticipant]
-        question:Question = self.questions__[self.curr_question_i]
-        # self.admin.askQ(participantID, question.forParticipant())
-        question:ClientQuestion = question.forParticipant()
-        # self.admin.ui.f_main.f_live.f_play.curr_round.setQ(question)
+        question: Question = self.questions[self.curr_question_i]
+        question: ClientQuestion = question.forParticipant()
+        
         self.admin.server.broadcast(
             createPayload("setquestion", question.jsons())
-            )
+        )
 
-        pf:PlayFrame = PlayFrame.me
+        pf: PlayFrame = PlayFrame.me
         pf.curr_round.setQ(question)
-        # name = self.admin.participants.getNames()[self.currentParticipant]
-        pf.setInfo("", f"Question : {self.curr_question_i+1}/{len(self.questions__)}")
-        pass
+        pf.setInfo("", f"Question : {self.curr_question_i+1}/{len(self.questions)}")
 
-    def askNextQ(self):
-        if not self.lastQuestionMarked : return
+    def askNextQ(self) -> None:
+        """Move to next question."""
+        if not self.lastQuestionMarked:
+            return
         self.lastQuestionMarked = False
-        # self.currentParticipant = (self.currentParticipant+1)%self.admin.participants.count()
         self.curr_question_i += 1
-        if self.curr_question_i >= len(self.questions__):
+        if self.curr_question_i >= len(self.questions):
             self.onend()
             return
         self.askQ()

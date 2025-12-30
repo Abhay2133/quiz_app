@@ -1,20 +1,21 @@
 import logging
-
+import socket as socket_module
 from sys import exit
 from selectors import DefaultSelector, EVENT_READ, EVENT_WRITE
 from types import SimpleNamespace
 from threading import Thread
-from socket import socket, SOCK_STREAM, AF_INET
+from socket import socket, SOCK_STREAM, AF_INET, error as SocketError
+from .logger import get_logger
+from ..config import config
 
-magicKey = b"India"
+logger = get_logger("network")
+magicKey = config.get("network.magic_key", "India").encode() if isinstance(config.get("network.magic_key", "India"), str) else config.get("network.magic_key", b"India")
 
 class EventEmitter:
-    __events = dict()
-    __listen=None
-    stop=False
-    
     def __init__(self):
-        pass
+        self.__events = dict()
+        self.__listen = None
+        self.stop = False
 
     def attach(self, listener):
         "Attach a global listener which will be called at every event"
@@ -55,43 +56,54 @@ class Client():
 
 class ServerSocket(EventEmitter):
 
-    sel = DefaultSelector()
-    clients = dict() # { portNumber<id[int]> : key<keySelector>}
-    killThread = True
-    eventThread = None
-    ssock=None
-    
     def __init__(self, addr:tuple) -> None:
         "pass the ip address and port number as argument in a tuple"
         super().__init__()
         self.sel = DefaultSelector()
+        self.clients = dict() # { portNumber<id[int]> : key<keySelector>}
+        self.killThread = True
+        self.eventThread = None
+        self.ssock = None
         self.addr = addr
         pass
 
     def start(self):
         self.killThread = False
         if self.eventThread:
+            logger.warning("Server already started")
             return
-        self.ssock = socket(AF_INET, SOCK_STREAM)
-        self.ssock.bind(self.addr)
-        self.ssock.listen()
-        print("server listening at", self.addr)
-        self.sel.register(self.ssock, EVENT_READ, data=None)
+        
+        try:
+            self.ssock = socket(AF_INET, SOCK_STREAM)
+            # Allow address reuse to avoid "Address already in use" errors
+            self.ssock.setsockopt(socket_module.SOL_SOCKET, socket_module.SO_REUSEADDR, 1)
+            self.ssock.bind(self.addr)
+            self.ssock.listen()
+            logger.info(f"Server listening at {self.addr}")
+            self.sel.register(self.ssock, EVENT_READ, data=None)
 
-        self.eventThread = Thread(target=self._server_event_loop, daemon=True)
-        self.eventThread.start()
-        pass
+            self.eventThread = Thread(target=self._server_event_loop, daemon=True)
+            self.eventThread.start()
+        except OSError as e:
+            logger.error(f"Failed to start server on {self.addr}: {e}", exc_info=True)
+            raise
+        except Exception as e:
+            logger.critical(f"Unexpected error starting server: {e}", exc_info=True)
+            raise
 
     def sendTo(self, message:bytes|str,clientID=None):
         if type(message) is str:
             message = bytes(message, encoding="utf-8")
 
         if clientID not in self.clients:
-            raise Exception(f"Client ID '{clientID}' not found")
+            error_msg = f"Client ID '{clientID}' not found"
+            logger.warning(error_msg)  # Warning instead of error - recoverable condition
+            raise Exception(error_msg)
 
         client_key = self.clients[clientID]
         data = client_key.data
         data.outb += message
+        logger.debug(f"Message queued for client {clientID}")
 
     def sendAllTo(self, message:bytes, clientID):
         if type(message) is str:
@@ -113,17 +125,27 @@ class ServerSocket(EventEmitter):
         while self.eventThread:
             self.killThread = True
 
-    def handshake(self, data): # recieve handshake -> send handshake
+    def handshake(self, data):  # receive handshake -> send handshake
+        """
+        Perform handshake with client.
+        Uses atomic stage checks to prevent race conditions.
+        """
         stage = data.handshakeStage
         if stage == 1:
+            # Stage 1: Verify received magic key
             if data.inb == magicKey:
                 data.inb = b""
+                logger.debug(f"Handshake stage 1 passed for client {data.addr[1]}")
             else:
+                error_msg = f"Magic key mismatch for client {data.addr[1]}, received: {data.inb}"
+                logger.warning(error_msg)
                 self.emit("handshake-failed", (stage, data.addr[1]))
-                print("error : magicKey does not matches, recv:",data.inb)
+                return
         elif stage == 2:
+            # Stage 2: Send magic key response
             data.outb = magicKey
-        pass
+            logger.debug(f"Sending handshake response to client {data.addr[1]}")
+        # Note: Stage 3 (done) is set in __handle_RW_events after successful send
 
     def __add_connection(self, key):
         soc = key.fileobj
@@ -139,77 +161,99 @@ class ServerSocket(EventEmitter):
         soc = key.fileobj
         data = key.data
         if mask & EVENT_READ:
-            recv = soc.recv(1024)
-            if recv:
+            try:
+                recv = soc.recv(1024)
+                if not recv:
+                    # Connection closed
+                    self._disconnect(key)
+                    return
+                    
                 data.inb += recv
                 
-                if data.handshakeStage == 0 :
+                # Handle handshake stage 0 -> 1 (receive magic key)
+                if data.handshakeStage == 0:
                     data.handshakeStage = 1
                     self.handshake(data)
                     return
-                self.emit("data-packet", {"clientID": data.clientID, "data": recv})
-                # print(f"recv {data.addr}: "+recv.decode("utf-8"))
-                # print(f"clients : {len(self.clients)}")
+                
+                # Only emit data-packet after handshake is complete
+                if data.handshakeStage >= 3:
+                    self.emit("data-packet", {"clientID": data.clientID, "data": recv})
+            except SocketError as e:
+                logger.error(f"Socket read error for client {data.clientID}: {e}")
+                self._disconnect(key)
+                return
+                
         if mask & EVENT_WRITE:
-            if data.handshakeStage == 1:
-                data.handshakeStage = 2
-                self.handshake(data)
-            
-            # emit the `data` event and flushes the `inb` (input buffer)
-            
-            if data.inb:
-                self.emit("data", {"clientID": data.clientID, "data": data.inb})
-                data.inb = b""
+            try:
+                # Handle handshake stage 1 -> 2 (send magic key)
+                if data.handshakeStage == 1:
+                    data.handshakeStage = 2
+                    self.handshake(data)
+                
+                # Send queued output data
+                sent = 0
+                if data.outb:
+                    sent = soc.send(data.outb)
+                    data.outb = data.outb[sent:]
 
-            sent = 0
-            if data.outb:
-                sent = soc.send(data.outb)
-            data.outb = data.outb[sent:]
-
-            # verify handshake = no error after sending data (like client doesn't disconnected)
-            if data.handshakeStage == 2:
-                data.handshakeStage = 3 # handshake done
-                print("HANDSHAKE DONE With", data.addr)
-                self.emit("handshake-done")
+                # Verify handshake completion after successful send
+                if data.handshakeStage == 2 and not data.outb:
+                    # All handshake data sent successfully
+                    data.handshakeStage = 3  # handshake done
+                    logger.info(f"Handshake completed with {data.addr}")
+                    self.emit("handshake-done", data.clientID)
+                
+                # Emit data event and flush input buffer (only after handshake complete)
+                if data.handshakeStage >= 3 and data.inb:
+                    self.emit("data", {"clientID": data.clientID, "data": data.inb})
+                    data.inb = b""
+            except SocketError as e:
+                logger.error(f"Socket write error for client {data.clientID}: {e}")
+                self._disconnect(key)
+                return
         
     def _server_event_loop(self):
-        print("server event_loop started")
+        logger.info("Server event loop started")
         while not self.killThread:
             lastConnKey = None
             
             try:
                 events = self.sel.select(timeout=None)
-                for key,mask in events:
+                for key, mask in events:
                     lastConnKey = key
                     if key.data is None:
                         # add new client
                         self.__add_connection(key)
-                        pass
-                    else :
+                    else:
                         # read / write clients
                         self.__handle_RW_events(key=key, mask=mask)
 
             except KeyboardInterrupt:
-                print("Exiting by Keyboard Interrupt")
-
+                logger.info("Server interrupted by keyboard")
                 exit(1)
+            except SocketError as e:
+                logger.error(f"Socket error in event loop: {e}", exc_info=True)
+                if lastConnKey:
+                    self._disconnect(lastConnKey)
             except Exception as e:
-                print("Exiting (EventLoop) : ", e)
-                logging.exception(f"An exception occurred: {e}")
-                self._disconnect(lastConnKey)
+                logger.error(f"Error in server event loop: {e}", exc_info=True)
+                if lastConnKey:
+                    self._disconnect(lastConnKey)
             finally:
                 pass
 
         self.eventThread = None
-        pass
+        logger.info("Server event loop ended")
 
     def _disconnect(self, key):
         sock = None
         clientID = None
         
         if key.data is None:
-            print("No `data` attr found in `key`")
+            logger.warning("No `data` attr found in `key` during disconnect")
             return
+        
         try:
             sock = key.fileobj
             clientID = key.data.addr[1]
@@ -219,8 +263,11 @@ class ServerSocket(EventEmitter):
 
             if clientID in self.clients:
                 self.clients.pop(clientID)
+                logger.info(f"Client {clientID} disconnected and removed")
+        except KeyError:
+            logger.debug(f"Client {clientID} already removed")
         except Exception as e:
-            print("ERORR DURING _disconnect\n",e, repr(key))
+            logger.error(f"Error during disconnect: {e}", exc_info=True)
         else:
             self.emit("disconnected", clientID)
 
@@ -238,62 +285,83 @@ class ClientSocket(EventEmitter):
         self.sel = DefaultSelector()
         self.addr = addr
 
-    def handshake(self, recv=None): # to verify the connection with server
-        if self.handshakeStage ==3:
-            print("Handshake already DONE")
+    def handshake(self, recv=None):  # to verify the connection with server
+        if self.handshakeStage == 3:
+            logger.debug("Handshake already completed")
             return
-        # socket is ready to write
         
         try:
             if self.handshakeStage == 1:
+                logger.debug(f"Sending handshake to {self.addr}")
                 self.csoc.send(magicKey)
                 return
             
             if self.handshakeStage == 2:
                 if recv == magicKey:
                     self.handshakeStage = 3
-                    print("Handshake Done with", self.addr)
-                    self.emit("handshake-done")
+                    logger.info(f"Handshake completed with {self.addr}")
+                    self.emit("handshake-done", None)
                 else:
-                    e=Exception(f"MAGIC KEY DOES NOT MATCHES, {recv} != {magicKey}")
-                    logging.exception(f"An exception occurred: {e}")
-                    self.emit("handshake-error", e)
+                    error = Exception(f"MAGIC KEY DOES NOT MATCH, {recv} != {magicKey}")
+                    logger.error(f"Handshake failed: {error}")
+                    self.emit("handshake-error", error)
 
-        except Exception as e:
-            print("HANDSHAKE FAILED")
-            logging.exception(f"An exception occurred: {e}")
+        except SocketError as e:
+            logger.error(f"Socket error during handshake: {e}", exc_info=True)
             self.emit("handshake-error", e)
-        else:
-            # self.handshakeDone = True
-            pass
-        finally:
-            pass
+        except Exception as e:
+            logger.error(f"Handshake failed: {e}", exc_info=True)
+            self.emit("handshake-error", e)
 
     def connect(self):
-        csoc = socket(AF_INET, SOCK_STREAM)
-        csoc.setblocking(False)
-        csoc.connect_ex(self.addr)
-        events = EVENT_WRITE | EVENT_READ
+        """
+        Connect to server asynchronously.
+        Starts event loop thread to handle connection.
+        """
+        try:
+            csoc = socket(AF_INET, SOCK_STREAM)
+            csoc.setblocking(False)
+            err = csoc.connect_ex(self.addr)
+            # 0 = success, 115 = EINPROGRESS (Linux), 36 = EINPROGRESS (macOS)
+            if err != 0 and err != 115 and err != 36:
+                raise SocketError(f"Connection failed with error {err}")
+            
+            events = EVENT_WRITE | EVENT_READ
 
-        self.data = SimpleNamespace(inb = b"", outb=b"")
-        self.sel.register(csoc, events, data=self.data)
-        self.csoc = csoc
+            self.data = SimpleNamespace(inb = b"", outb=b"")
+            self.sel.register(csoc, events, data=self.data)
+            self.csoc = csoc
 
-        self.eventThread = Thread(target=self._client_event_loop, daemon=True)
-        self.eventThread.start()
+            self.eventThread = Thread(target=self._client_event_loop, daemon=True)
+            self.eventThread.start()
+            logger.info(f"Connection attempt initiated to {self.addr}")
+        except SocketError as e:
+            logger.error(f"Socket error during connect: {e}", exc_info=True)
+            self.emit("error", e)
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error during connect: {e}", exc_info=True)
+            self.emit("error", e)
+            raise
 
     def disconnect(self):
+        logger.info(f"Disconnecting from {self.addr}")
         try:
-            self.sel.unregister(self.csoc)
-        except:
-            pass
+            if self.csoc:
+                self.sel.unregister(self.csoc)
+        except (KeyError, ValueError):
+            logger.debug("Socket already unregistered")
+        except Exception as e:
+            logger.warning(f"Error unregistering socket: {e}")
+        
         try:
-            self.csoc.close()
-        except:
-            pass
+            if self.csoc:
+                self.csoc.close()
+        except Exception as e:
+            logger.warning(f"Error closing socket: {e}")
+        
         self.csoc = None
-        self.stopThread=True
-        # self.eventThread.join()
+        self.stopThread = True
 
     def send(self, message:bytes):
         self.data.outb += message
@@ -302,50 +370,85 @@ class ClientSocket(EventEmitter):
         sock = key.fileobj
         data = key.data
         if mask & EVENT_READ: # ready to read
-            recv_data = sock.recv(1024)
-            if recv_data:
-
-                if self.handshakeStage == 1: # reveice magickey from server
+            try:
+                recv_data = sock.recv(1024)
+                if not recv_data:
+                    # Connection closed
+                    logger.info("Server closed connection")
+                    self.emit("disconnected")
+                    return
+                
+                # Handle handshake stage 1 -> 2 (receive magic key from server)
+                if self.handshakeStage == 1:
                     self.handshakeStage = 2
                     self.handshake(recv_data)
                     return
                 
-                data.inb += recv_data
-                self.emit("data-packet", recv_data)
+                # Only process data after handshake is complete
+                if self.handshakeStage >= 3:
+                    data.inb += recv_data
+                    self.emit("data-packet", recv_data)
+            except SocketError as e:
+                logger.error(f"Socket read error: {e}", exc_info=True)
+                self.emit("error", e)
+                self.emit("disconnected")
+                return
+                
         if mask & EVENT_WRITE: # ready to write
-            if self.handshakeStage == 0: # sends handleshake magickey to server
-                self.handshakeStage = 1
-                self.handshake()
-            if data.inb:
-                self.emit("data", data.inb)
-                data.inb = b"" # flush input buffer
-            if data.outb:
-                sent = sock.send(data.outb) 
-                data.outb = data.outb[sent:]
-        pass
+            try:
+                # Handle handshake stage 0 -> 1 (send magic key to server)
+                if self.handshakeStage == 0:
+                    self.handshakeStage = 1
+                    self.handshake()
+                
+                # Send queued output data
+                if data.outb:
+                    sent = sock.send(data.outb) 
+                    data.outb = data.outb[sent:]
+                
+                # Emit data event and flush input buffer (only after handshake complete)
+                if self.handshakeStage >= 3 and data.inb:
+                    self.emit("data", data.inb)
+                    data.inb = b"" # flush input buffer
+            except SocketError as e:
+                logger.error(f"Socket write error: {e}", exc_info=True)
+                self.emit("error", e)
+                self.emit("disconnected")
+                return
 
     def _client_event_loop(self):
-        print("Client EVENT LOOP STARTED")
+        logger.info(f"Client event loop started for {self.addr}")
         try:
             while True:
                 if self.stopThread:
-                    self.stopThread=False
+                    self.stopThread = False
+                    logger.info("Client event loop stopped by flag")
                     return
                 events = self.sel.select(timeout=None)
                 for key, mask in events:
                     self.__handle_RW_events(key, mask)
         except KeyboardInterrupt:
-            print("exiting (client) by keyboard interrupt")
+            logger.info("Client interrupted by keyboard")
             exit(2)
-        except Exception as e:
-            print("Exiting (client): " , e)
-            logging.exception(f"An exception occurred: {e}")
+        except SocketError as e:
+            logger.error(f"Socket error in client event loop: {e}", exc_info=True)
             self.emit("error", e)
-            self.sel.close()
+            try:
+                self.sel.close()
+            except Exception:
+                pass
+            self.emit("disconnected")
+        except Exception as e:
+            logger.error(f"Error in client event loop: {e}", exc_info=True)
+            self.emit("error", e)
+            try:
+                self.sel.close()
+            except Exception:
+                pass
             self.emit("disconnected")
         finally:
             pass
-        print("Event Loop ended")
+        logger.info("Client event loop ended")
 
 if __name__ == "__main__":
     ee = EventEmitter()

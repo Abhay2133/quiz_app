@@ -51,9 +51,10 @@ class Participants():
     
     def copy(self):
         participants = Participants()
-        for p in self.__participants:
+        for p in self.__participants.values():
             p.isPlaying =True
             participants.add(p)
+        return participants
 
     def get(self, clientID:Participant.clientID)->Participant:
         if self.find(clientID):
@@ -69,7 +70,7 @@ class Participants():
         return tuple(self.__participants.keys())
     
     def getNames(self):
-        names = [self.__participants[i].name for i in self.__participants]
+        names = [self.__participants[i].name for i in self.__participants if self.__participants[i].name is not None]
         return names
 
 def createPayload(action:str, data:dict|str=None)->bytes:

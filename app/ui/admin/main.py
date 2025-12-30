@@ -6,6 +6,7 @@ from .frames.participants import ParticipantsFrame
 from .frames.settings import SettingsFrame
 from PIL import Image
 import os
+import platform
 from tktooltip import ToolTip
 from CTkToolTip import *
 from ...lib.util import Obj
@@ -142,7 +143,15 @@ class App(ctk.CTk):
 
         self.title("ADMIN")
         self.geometry("800x600")
-        self.after(10, lambda:self.state("zoomed"))
+        
+        # Handle window state based on platform
+        if platform.system() == "Darwin":  # macOS
+            # On macOS, maximize using geometry instead of state
+            self.after(10, self._maximize_macos)
+        else:
+            # On Windows/Linux, use zoomed state
+            self.after(10, lambda: self.state("zoomed"))
+        
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
@@ -157,11 +166,34 @@ class App(ctk.CTk):
         self.f_main.setActiveFrame(self.f_main.f_home)
 
         _App.app=self
+    
+    def _maximize_macos(self):
+        """Maximize window on macOS"""
+        try:
+            # Get screen dimensions and set window to fullscreen
+            self.update_idletasks()
+            width = self.winfo_screenwidth()
+            height = self.winfo_screenheight()
+            self.geometry(f"{width}x{height}+0+0")
+            # Bring window to front
+            self.lift()
+            self.attributes('-topmost', True)
+            self.after_idle(lambda: self.attributes('-topmost', False))
+        except Exception as e:
+            print(f"Warning: Could not maximize window: {e}")
 
     def show(self):
         # self.topBar.show()
         self.f_side.show()
         self.f_main.show()
+        # Ensure window is visible and on top
+        self.update_idletasks()
+        self.lift()
+        self.focus_force()
+        if platform.system() == "Darwin":
+            # On macOS, ensure window appears
+            self.attributes('-topmost', True)
+            self.after_idle(lambda: self.attributes('-topmost', False))
         self.mainloop()
 
 app = None
