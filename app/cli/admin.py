@@ -33,7 +33,7 @@ class Admin(ADMIN, EventEmitter):
         cls()
         print("ROUND -", self.currentRoundIndex+1)
         print("\n Q.)", question.text)
-        options = list(filter(bool, question.options.split(",")))
+        options = list(filter(bool, question.options.split("|")))
         # Prints Question on Admin
         for i,o in enumerate(options):
             print(f"{i+1}. {o}")
